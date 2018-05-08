@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from __future__ import division
 
+# Standard library imports
 import array
 import collections
 import csv
@@ -11,42 +12,56 @@ import os.path
 from cStringIO import StringIO
 import sys
 
+# ROS imports
 import rospy
 import geometry_msgs.msg
 import mavros_msgs.srv
 
+# GObject-introspection setup and imports
 import gi
-gi.require_version('Gtk', '3.0')
+
+gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, GdkPixbuf, Gdk, GLib, GObject
 
+# Graphics imports
 import cairo
 from PIL import Image, ImageDraw, ImageFont
 
+# Requests imports and setup
 import requests
 import requests_cache
+
 requests_cache.install_cache(
-        cache_name=os.path.join(os.path.dirname(__file__), 'gcs_map_cache'),
-        backend='sqlite', expire_after=None, ignored_parameters=['key'])
+    cache_name=os.path.join(os.path.dirname(__file__), "gcs_map_cache"),
+    backend="sqlite",
+    expire_after=None,
+    ignored_parameters=["key"],
+)
 
 
-AFRL_GOOGLE_STATIC_MAPS_KEY = 'AIzaSyBeKwLH_2W_dcbLsnM03B8I56GGYYDxyRY'
+# This key belongs to afrl.usc@gmail.com
+AFRL_GOOGLE_STATIC_MAPS_KEY = "AIzaSyBeKwLH_2W_dcbLsnM03B8I56GGYYDxyRY"
+# This is the default pixel size for a side of the square fully-zoomed-out world map
 GOOGLE_NATIVE_MAP_SIZE = 512
 VIRTUAL_MAP_CANVAS_SIZE = GOOGLE_NATIVE_MAP_SIZE * 2
-STATUS_CONFIG_FILENAME = 'gcs_status_config.csv'
+STATUS_CONFIG_FILENAME = "gcs_status_config.csv"
 STATUS_CONFIG_FILEPATH = os.path.join(os.path.dirname(__file__), STATUS_CONFIG_FILENAME)
-UBUNTU_FONT_FILENAME = 'Ubuntu-R.ttf'
+UBUNTU_FONT_FILENAME = "Ubuntu-R.ttf"
 UBUNTU_FONT_FILEPATH = os.path.join(os.path.dirname(__file__), UBUNTU_FONT_FILENAME)
 
 
-def load_status_config_field(row, field, default=''):
-    value = row.get(field, '')
-    if value == '':
+def load_status_config_field(row, field, default=""):
+    """Get a field from the row dict, with a default if it is empty."""
+    value = row.get(field, "")
+    if value == "":
         value = default
     return value
 
 
-class StatusLabel (Gtk.Label):
-    def __init__(self, row, ns='/'):
+class StatusLabel(Gtk.Label):
+    """A label that updates from a ROS topic, up to a max of 10 Hz."""
+
+    def __init__(self, row, ns="/"):
         Gtk.Label.__init__(self)
         self.ns = ns
 
@@ -55,84 +70,112 @@ class StatusLabel (Gtk.Label):
         self.data = None
 
         self.load_fields(row)
-        self.subscriber = rospy.Subscriber(self.topic, self.message,
-                self.request_text_update) 
+        self.subscriber = rospy.Subscriber(
+            self.topic, self.message, self.request_text_update
+        )
 
         self.set_justify(Gtk.Justification.CENTER)
         self.update_text()
 
     def request_text_update(self, data=None):
+        """Request an update of the label in 100 ms."""
         self.data = data
         if not self.going_to_update:
             self.going_to_update = True
             GLib.timeout_add(100, self.update_text)
 
     def get_updated_value(self, data):
+        """Get the most recent value of the field, even if the text hasn't updated.
+        
+        You should usually pass in self.data to the data argument.
+        """
         if data is None:
             value = self.default
         else:
             value = data
-            field, _, factor = self.field.partition('*')
-            if factor == '':
+            # The field can include a constant factor for the value
+            field, _, factor = self.field.partition("*")
+            if factor == "":
                 factor = 1
             else:
                 factor = float(factor)
-            for name in field.split('.'):
+            # Actually get the value by accessing the field
+            for name in field.split("."):
                 value = getattr(value, name)
             if isinstance(value, geometry_msgs.msg.Vector3):
-                value = math.sqrt(value.x**2 + value.y**2 + value.z**2)
+                # Vectors get converted to their lengths
+                value = math.sqrt(value.x ** 2 + value.y ** 2 + value.z ** 2)
             value = self.status_type(value * factor)
         return value
 
     def update_text(self):
+        """Load the most recent value into the label.
+        
+        Do not call multiple times too rapidly in succession.
+        """
         self.value = self.get_updated_value(self.data)
         if self.status_min is None and self.status_max is None:
-            foreground = 'black'
-        elif ((self.status_min is not None and self.value < self.status_min) or
-                (self.status_max is not None and self.value > self.status_max)):
-            foreground = 'red'
+            foreground = "black"
+        elif (
+            (self.status_min is not None and self.value < self.status_min)
+            or (self.status_max is not None and self.value > self.status_max)
+        ):
+            foreground = "red"
         else:
-            foreground = 'green'
+            foreground = "green"
         markup = '<span size="x-small">{}</span>\n<span size="x-large" foreground="{}">{}{}</span>'.format(
-                GLib.markup_escape_text(self.title), foreground,
-                GLib.markup_escape_text(('{:.' + str(self.precision) + 'g}').format(self.value)
-                    if self.status_type == float else str(self.value)), self.unit)
+            GLib.markup_escape_text(self.title),
+            foreground,
+            GLib.markup_escape_text(
+                ("{:." + str(self.precision) + "g}").format(self.value)
+                if self.status_type == float
+                else str(self.value)
+            ),
+            self.unit,
+        )
         self.set_markup(markup)
         self.going_to_update = False
 
     def load_fields(self, row):
-        self.identifier = load_status_config_field(row, 'identifier')
-        self.status_type = load_status_config_field(row, 'type').lower()
-        if self.status_type == 'string':
+        """Initialize the label object from a row of fields (usually from a CSV)."""
+        self.identifier = load_status_config_field(row, "identifier")
+        self.status_type = load_status_config_field(row, "type").lower()
+        if self.status_type == "string":
             self.status_type = str
-        elif self.status_type == 'int':
+        elif self.status_type == "int":
             self.status_type = int
         else:
             self.status_type = float
-        self.topic = os.path.join(self.ns, load_status_config_field(row, 'topic', '/rosout'))
-        self.message = load_status_config_field(row, 'message', 'std_msgs/Float64')
-        message_parts = self.message.split('/')
-        self.message = getattr(importlib.import_module(message_parts[0] + '.msg'), message_parts[1])
-        self.field = load_status_config_field(row, 'field', 'data')
-        self.precision = int(load_status_config_field(row, 'precision', '6'))
-        self.unit = load_status_config_field(row, 'unit')
-        self.title = load_status_config_field(row, 'title',  self.identifier.capitalize())
-        self.settable = load_status_config_field(row, 'settable').lower()
-        self.settable = (self.settable == 'true')
-        self.status_min = load_status_config_field(row, 'min')
-        if self.status_min == '':
+        self.topic = os.path.join(
+            self.ns, load_status_config_field(row, "topic", "/rosout")
+        )
+        self.message = load_status_config_field(row, "message", "std_msgs/Float64")
+        message_parts = self.message.split("/")
+        self.message = getattr(
+            importlib.import_module(message_parts[0] + ".msg"), message_parts[1]
+        )
+        self.field = load_status_config_field(row, "field", "data")
+        self.precision = int(load_status_config_field(row, "precision", "6"))
+        self.unit = load_status_config_field(row, "unit")
+        self.title = load_status_config_field(
+            row, "title", self.identifier.capitalize()
+        )
+        self.settable = load_status_config_field(row, "settable").lower()
+        self.settable = (self.settable == "true")
+        self.status_min = load_status_config_field(row, "min")
+        if self.status_min == "":
             self.status_min = None
         else:
             self.status_min = self.status_type(self.status_min)
-        self.status_max = load_status_config_field(row, 'max')
-        if self.status_max == '':
+        self.status_max = load_status_config_field(row, "max")
+        if self.status_max == "":
             self.status_max = None
         else:
             self.status_max = self.status_type(self.status_max)
-        self.default = load_status_config_field(row, 'default')
-        if self.default == '':
+        self.default = load_status_config_field(row, "default")
+        if self.default == "":
             if self.status_type == str:
-                self.default = ''
+                self.default = ""
             else:
                 self.default = self.status_type(0)
 
@@ -140,18 +183,27 @@ class StatusLabel (Gtk.Label):
         return self.do_get_preferred_width()
 
     def do_get_preferred_width(self):
-        self.preferred_width = max(self.preferred_width,
-                Gtk.Label.do_get_preferred_width(self),
-                self.get_allocation().width)
+        # Don't allow the label's width to shrink, to avoid spastic sizing.
+        self.preferred_width = max(
+            self.preferred_width,
+            Gtk.Label.do_get_preferred_width(self),
+            self.get_allocation().width,
+        )
         return self.preferred_width
 
 
 def connect_service_button(button, proxy, *args):
-    button.connect('clicked', lambda widget: proxy(*args))
+    """Connect a function with independent args to the clicked signal."""
+    button.connect("clicked", lambda widget: proxy(*args))
 
 
-class StatusWidget (Gtk.Notebook):
-    def __init__(self, edit_wps_callback, ns='/'):
+class StatusWidget(Gtk.Notebook):
+    """A tabbed widget with status labels and action buttons.
+    
+    Objects of this class also act as representations of robots to the map widget.
+    """
+
+    def __init__(self, edit_wps_callback, ns="/"):
         Gtk.Notebook.__init__(self)
         self.edit_wps_callback = edit_wps_callback
         self.ns = ns
@@ -160,32 +212,44 @@ class StatusWidget (Gtk.Notebook):
         with open(STATUS_CONFIG_FILEPATH) as f:
             self.status_labels = self.load_status_labels(f)
 
-        self.set_arm = rospy.ServiceProxy(os.path.join(ns, 'mavros/cmd/arming'),
-                mavros_msgs.srv.CommandBool)
-        self.set_mode = rospy.ServiceProxy(os.path.join(ns, 'mavros/set_mode'),
-                mavros_msgs.srv.SetMode)
-        self.waypoints_sub = rospy.Subscriber(os.path.join(ns, 'mavros/mission/waypoints'),
-                mavros_msgs.msg.WaypointList, lambda msg: self.set_waypoints(msg.waypoints))
-        self.pull_waypoints = rospy.ServiceProxy(os.path.join(ns, 'mavros/mission/pull'),
-                mavros_msgs.srv.WaypointPull)
-        self.push_waypoints = rospy.ServiceProxy(os.path.join(ns, 'mavros/mission/push'),
-                mavros_msgs.srv.WaypointPush)
-        self.clear_waypoints_srv = rospy.ServiceProxy(os.path.join(ns, 'mavros/mission/clear'),
-                mavros_msgs.srv.WaypointClear)
-        self.set_home = rospy.ServiceProxy(os.path.join(ns, 'mavros/cmd/set_home'),
-                mavros_msgs.srv.CommandHome)
+        self.set_arm = rospy.ServiceProxy(
+            os.path.join(ns, "mavros/cmd/arming"), mavros_msgs.srv.CommandBool
+        )
+        self.set_mode = rospy.ServiceProxy(
+            os.path.join(ns, "mavros/set_mode"), mavros_msgs.srv.SetMode
+        )
+        self.waypoints_sub = rospy.Subscriber(
+            os.path.join(ns, "mavros/mission/waypoints"),
+            mavros_msgs.msg.WaypointList,
+            lambda msg: self.set_waypoints(msg.waypoints),
+        )
+        self.pull_waypoints = rospy.ServiceProxy(
+            os.path.join(ns, "mavros/mission/pull"), mavros_msgs.srv.WaypointPull
+        )
+        self.push_waypoints = rospy.ServiceProxy(
+            os.path.join(ns, "mavros/mission/push"), mavros_msgs.srv.WaypointPush
+        )
+        self.clear_waypoints_srv = rospy.ServiceProxy(
+            os.path.join(ns, "mavros/mission/clear"), mavros_msgs.srv.WaypointClear
+        )
+        self.set_home = rospy.ServiceProxy(
+            os.path.join(ns, "mavros/cmd/set_home"), mavros_msgs.srv.CommandHome
+        )
 
-        self.append_page(self.create_status_grid(), Gtk.Label('Status'))
-        self.append_page(self.create_action_grid(), Gtk.Label('Actions'))
+        self.append_page(self.create_status_grid(), Gtk.Label("Status"))
+        self.append_page(self.create_action_grid(), Gtk.Label("Actions"))
 
     def clear_waypoints(self):
+        """Clears the waypoints on the MAV, then requests a waypoint update."""
         self.clear_waypoints_srv()
         self.pull_waypoints()
 
     def set_waypoints(self, waypoints):
+        """Set the waypoints field. Provided for the waypoint subscriber."""
         self.waypoints = waypoints
 
     def load_status_labels(self, config_file):
+        """Create status labels from the config file and return an ordered dict."""
         labels = collections.OrderedDict()
         for row in csv.DictReader(config_file):
             label = StatusLabel(row, self.ns)
@@ -193,6 +257,7 @@ class StatusWidget (Gtk.Notebook):
         return labels
 
     def create_status_grid(self):
+        """Put the status labels in a 1:4 aspect ratio grid."""
         grid = Gtk.Grid()
         grid.set_column_spacing(8)
         width = int(math.ceil(math.sqrt(len(self.status_labels)) / 2))
@@ -205,6 +270,7 @@ class StatusWidget (Gtk.Notebook):
         return grid
 
     def create_action_grid(self):
+        """Create the panel of action buttons."""
         grid = Gtk.Grid()
         grid.set_column_spacing(4)
         for i in xrange(4):
@@ -213,68 +279,76 @@ class StatusWidget (Gtk.Notebook):
         for i in xrange(4):
             grid.insert_row(i)
 
-        arm_button = Gtk.Button.new_with_label('Arm')
+        arm_button = Gtk.Button.new_with_label("Arm")
         connect_service_button(arm_button, self.set_arm, True)
         grid.attach(arm_button, 0, 0, 1, 1)
-        disarm_button = Gtk.Button.new_with_label('Disarm')
+        disarm_button = Gtk.Button.new_with_label("Disarm")
         connect_service_button(disarm_button, self.set_arm, False)
         grid.attach(disarm_button, 1, 0, 1, 1)
 
-        grid.attach(Gtk.Label('Modes'), 0, 1, 2, 1)
-        manual_button = Gtk.Button.new_with_label('Manual')
-        connect_service_button(manual_button, self.set_mode, 0, 'MANUAL')
+        grid.attach(Gtk.Label("Modes"), 0, 1, 2, 1)
+        manual_button = Gtk.Button.new_with_label("Manual")
+        connect_service_button(manual_button, self.set_mode, 0, "MANUAL")
         grid.attach(manual_button, 0, 2, 1, 1)
-        hold_button = Gtk.Button.new_with_label('Hold')
-        connect_service_button(hold_button, self.set_mode, 0, 'HOLD')
+        hold_button = Gtk.Button.new_with_label("Hold")
+        connect_service_button(hold_button, self.set_mode, 0, "HOLD")
         grid.attach(hold_button, 1, 2, 1, 1)
-        auto_button = Gtk.Button.new_with_label('Auto')
-        connect_service_button(auto_button, self.set_mode, 0, 'AUTO')
+        auto_button = Gtk.Button.new_with_label("Auto")
+        connect_service_button(auto_button, self.set_mode, 0, "AUTO")
         grid.attach(auto_button, 0, 3, 1, 1)
-        guided_button = Gtk.Button.new_with_label('Guided')
-        connect_service_button(guided_button, self.set_mode, 0, 'GUIDED')
+        guided_button = Gtk.Button.new_with_label("Guided")
+        connect_service_button(guided_button, self.set_mode, 0, "GUIDED")
         grid.attach(guided_button, 1, 3, 1, 1)
 
         grid.attach(Gtk.Separator.new(Gtk.Orientation.VERTICAL), 2, 0, 1, 4)
 
-        self.waypoints_button = Gtk.ToggleButton.new_with_label('Edit WPs')
-        self.waypoints_button.connect('toggled', lambda w: self.edit_wps_callback(w, self.ns))
+        self.waypoints_button = Gtk.ToggleButton.new_with_label("Edit WPs")
+        self.waypoints_button.connect(
+            "toggled", lambda w: self.edit_wps_callback(w, self.ns)
+        )
         grid.attach(self.waypoints_button, 3, 0, 1, 1)
-        clear_wps_button = Gtk.Button.new_with_label('Clear WPs')
+        clear_wps_button = Gtk.Button.new_with_label("Clear WPs")
         connect_service_button(clear_wps_button, self.clear_waypoints)
         grid.attach(clear_wps_button, 3, 1, 1, 1)
-        set_home_button = Gtk.Button.new_with_label('Set Home')
+        set_home_button = Gtk.Button.new_with_label("Set Home")
         connect_service_button(set_home_button, self.set_home, True, 0, 0, 0)
         grid.attach(set_home_button, 3, 2, 1, 1)
-        self.color_button = Gtk.ColorButton.new_with_rgba(Gdk.RGBA.from_color(Gdk.Color(42148, 0, 0)))
+        self.color_button = Gtk.ColorButton.new_with_rgba(
+            Gdk.RGBA.from_color(Gdk.Color(42148, 0, 0))
+        )
         grid.attach(self.color_button, 3, 3, 1, 1)
 
         return grid
 
     def get_label_underlying_value(self, identifier):
+        """Get the most updated value from the topic underlying a status field."""
         label = self.status_labels[identifier]
         return label.get_updated_value(label.data)
 
     def get_latitude(self):
-        return self.get_label_underlying_value('latitude')
+        return self.get_label_underlying_value("latitude")
 
     def get_longitude(self):
-        return self.get_label_underlying_value('longitude')
+        return self.get_label_underlying_value("longitude")
 
     def get_heading(self):
-        return self.get_label_underlying_value('heading')
+        return self.get_label_underlying_value("heading")
 
     def get_reached_wp_seq(self):
-        reached_wp_seq = self.get_label_underlying_value('reached_wp_seq')
+        """Get the most recent reached waypoint for the purposes of display."""
+        reached_wp_seq = self.get_label_underlying_value("reached_wp_seq")
         if reached_wp_seq < len(self.waypoints) - 1:
             for i, waypoint in enumerate(self.waypoints):
                 if waypoint.is_current:
                     return i - 1
-        if self.get_label_underlying_value('mode') == 'AUTO':
+        if self.get_label_underlying_value("mode") == "AUTO":
             return reached_wp_seq
         return -1
 
 
-class SidebarWidget (Gtk.ScrolledWindow):
+class SidebarWidget(Gtk.ScrolledWindow):
+    """Container for the status widgets."""
+
     def __init__(self, edit_wps_callback):
         Gtk.Grid.__init__(self)
 
@@ -282,10 +356,10 @@ class SidebarWidget (Gtk.ScrolledWindow):
 
         self.grid = Gtk.Grid()
         self.status_widgets = {}
-        
+
         self.ns_entry = Gtk.Entry()
-        self.add_ns_button = Gtk.Button.new_with_label('Add Namespace')
-        self.add_ns_button.connect('clicked', self.add_status_widget)
+        self.add_ns_button = Gtk.Button.new_with_label("Add Namespace")
+        self.add_ns_button.connect("clicked", self.add_status_widget)
 
         self.grid.insert_column(0)
         self.grid.insert_column(1)
@@ -293,7 +367,7 @@ class SidebarWidget (Gtk.ScrolledWindow):
         self.grid.attach(self.ns_entry, 0, 0, 1, 1)
         self.grid.attach(self.add_ns_button, 1, 0, 1, 1)
 
-        self.add_status_widget(ns='/')
+        self.add_status_widget(ns="/")
 
         self.add(self.grid)
 
@@ -307,12 +381,14 @@ class SidebarWidget (Gtk.ScrolledWindow):
         self.grid.attach(self.status_widgets[ns], 0, 1, 2, 1)
         self.status_widgets[ns].show_all()
         self.grid.insert_row(2)
+
         def remove_callback(widget):
             self.grid.remove(self.status_widgets[ns])
             del self.status_widgets[ns]
             self.grid.remove(widget)
-        remove_button = Gtk.Button.new_with_label('Remove {!r}'.format(ns))
-        remove_button.connect('clicked', remove_callback)
+
+        remove_button = Gtk.Button.new_with_label("Remove {!r}".format(ns))
+        remove_button.connect("clicked", remove_callback)
         self.grid.attach(remove_button, 0, 2, 2, 1)
         remove_button.show()
 
@@ -324,32 +400,48 @@ class SidebarWidget (Gtk.ScrolledWindow):
 
 
 def generate_map_url(lat, lon, zoom):
-    return ('https://maps.googleapis.com/maps/api/staticmap'
-            '?center={lat:f},{lon:f}&zoom={zoom:d}&size={size:d}x{size:d}'
-            '&maptype=hybrid&key={key:s}').format(
-                    lat=lat, lon=lon, zoom=zoom, size=GOOGLE_NATIVE_MAP_SIZE,
-                    key=AFRL_GOOGLE_STATIC_MAPS_KEY)
+    """Get the Google Static Maps API URL for a location and zoom level."""
+    return (
+        "https://maps.googleapis.com/maps/api/staticmap"
+        "?center={lat:f},{lon:f}&zoom={zoom:d}&size={size:d}x{size:d}"
+        "&maptype=hybrid&key={key:s}"
+    ).format(
+        lat=lat,
+        lon=lon,
+        zoom=zoom,
+        size=GOOGLE_NATIVE_MAP_SIZE,
+        key=AFRL_GOOGLE_STATIC_MAPS_KEY,
+    )
 
 
+# In the four following functions, x and y refer to coordinates in a fully
+# zoomed out square Mercator projection like the one used by Google Maps.
 def x_to_longitude(x):
     return 360 * ((x / GOOGLE_NATIVE_MAP_SIZE) % 1) - 180
+
 
 def longitude_to_x(lon):
     return GOOGLE_NATIVE_MAP_SIZE * (lon + 180) / 360
 
+
 def y_to_latitude(y):
-    return 90 - 360 * math.atan(math.exp(2 * math.pi *
-        (y / GOOGLE_NATIVE_MAP_SIZE - 0.5))) / math.pi
+    return 90 - 360 * math.atan(
+        math.exp(2 * math.pi * (y / GOOGLE_NATIVE_MAP_SIZE - 0.5))
+    ) / math.pi
+
 
 def latitude_to_y(lat):
-    return GOOGLE_NATIVE_MAP_SIZE * (0.5 + math.log(math.tan(math.pi *
-        (90 - lat) / 360)) / (2 * math.pi))
-    
+    return GOOGLE_NATIVE_MAP_SIZE * (
+        0.5 + math.log(math.tan(math.pi * (90 - lat) / 360)) / (2 * math.pi)
+    )
+
+
 GOOGLE_MAP_MAX_LATITUDE = y_to_latitude(0)
-EMPTY_CHUNK = Image.new('RGB', (GOOGLE_NATIVE_MAP_SIZE,) * 2)
+EMPTY_CHUNK = Image.new("RGB", (GOOGLE_NATIVE_MAP_SIZE,) * 2)
 
 
 def fetch_map_chunk(cx, cy, zoom):
+    """Fetch a chunk from Google (or cache) and load it into a PIL image."""
     lon = x_to_longitude(cx)
     lat = y_to_latitude(cy)
     if abs(lat) > GOOGLE_MAP_MAX_LATITUDE:
@@ -367,12 +459,15 @@ def fetch_map_chunk(cx, cy, zoom):
 
 
 def pil_to_pixbuf(im):
-    pixels = GLib.Bytes(im.convert('RGB').tobytes('raw', 'RGB', 0, 1))
-    return GdkPixbuf.Pixbuf.new_from_bytes(pixels, GdkPixbuf.Colorspace.RGB,
-            False, 8, im.width, im.height, im.width * 3)
+    """Convert a PIL image to a Gdk Pixbuf, without alpha."""
+    pixels = GLib.Bytes(im.convert("RGB").tobytes("raw", "RGB", 0, 1))
+    return GdkPixbuf.Pixbuf.new_from_bytes(
+        pixels, GdkPixbuf.Colorspace.RGB, False, 8, im.width, im.height, im.width * 3
+    )
 
 
 def transformed_polygon(polygon, rotate, translate):
+    """Rotate and then translate a polygon with respect to the origin (0, 0)."""
     new_polygon = []
     for x, y in polygon:
         new_x = x * math.cos(rotate) - y * math.sin(rotate)
@@ -383,7 +478,9 @@ def transformed_polygon(polygon, rotate, translate):
     return new_polygon
 
 
-class MapWidget (Gtk.EventBox):
+class MapWidget(Gtk.EventBox):
+    """An interactive map that shows robots, waypoints, and traces."""
+
     def __init__(self, win):
         Gtk.EventBox.__init__(self)
 
@@ -392,7 +489,7 @@ class MapWidget (Gtk.EventBox):
         self.map_cx = longitude_to_x(149.1652)
         self.map_cy = latitude_to_y(-35.36326)
         self.map_zoom = 18
-        
+
         self.button1_down = False
         self.going_to_update = False
         self.loading_waypoints = False
@@ -405,16 +502,16 @@ class MapWidget (Gtk.EventBox):
         self.image_widget = Gtk.Image()
         self.add(self.image_widget)
 
-        self.im = Image.new('RGB', (VIRTUAL_MAP_CANVAS_SIZE,) * 2)
+        self.im = Image.new("RGB", (VIRTUAL_MAP_CANVAS_SIZE,) * 2)
         self.update_image()
-        self.connect('size-allocate', self.update_display)
-        self.connect('button-press-event', self.update_buttons)
-        self.connect('button-release-event', self.update_buttons)
-        self.connect('motion-notify-event', self.handle_motion)
-        self.connect('scroll-event', self.handle_scroll)
+        self.connect("size-allocate", self.update_display)
+        self.connect("button-press-event", self.update_buttons)
+        self.connect("button-release-event", self.update_buttons)
+        self.connect("motion-notify-event", self.handle_motion)
+        self.connect("scroll-event", self.handle_scroll)
 
         GLib.timeout_add(100, lambda: self.update_display() or True)
-    
+
     def do_get_preferred_width(self):
         return self.win.get_size().width - 2
 
@@ -425,12 +522,14 @@ class MapWidget (Gtk.EventBox):
         return self.win.get_size().height - 2
 
     def update_buttons(self, widget=None, event=None):
+        """Handle a mouse button event."""
         prev_button1_down = self.button1_down
         self.button1_down = bool(event.state & Gdk.ModifierType.BUTTON1_MASK)
         if self.button1_down and not prev_button1_down:
             self.motion_prev_x = event.x
             self.motion_prev_y = event.y
             if self.editing_ns_wps is not None:
+                # Upload a waypoint to the MAV
                 self.loading_waypoints = True
                 self.update_display()
                 status_widget = self.win.sidebar.status_widgets[self.editing_ns_wps]
@@ -439,7 +538,9 @@ class MapWidget (Gtk.EventBox):
                 waypoint.frame = mavros_msgs.msg.Waypoint.FRAME_GLOBAL_REL_ALT
                 waypoint.command = mavros_msgs.msg.CommandCode.NAV_WAYPOINT
                 waypoint.autocontinue = True
-                waypoint.x_lat, waypoint.y_long = self.cropped_xy_to_latlon(event.x, event.y)
+                waypoint.x_lat, waypoint.y_long = self.cropped_xy_to_latlon(
+                    event.x, event.y
+                )
 
                 wp0 = mavros_msgs.msg.Waypoint()
                 wp0.frame = mavros_msgs.msg.Waypoint.FRAME_GLOBAL_REL_ALT
@@ -447,10 +548,12 @@ class MapWidget (Gtk.EventBox):
                 wp0.autocontinue = True
                 wp0.x_lat = status_widget.get_latitude()
                 wp0.y_long = status_widget.get_longitude()
-                
+
                 new_waypoint_list = list(status_widget.waypoints)
-                if (len(new_waypoint_list) == 0 or
-                        new_waypoint_list[0].command != wp0.command):
+                if (
+                    len(new_waypoint_list) == 0
+                    or new_waypoint_list[0].command != wp0.command
+                ):
                     new_waypoint_list.insert(0, wp0)
                 else:
                     new_waypoint_list[0] = wp0
@@ -462,14 +565,16 @@ class MapWidget (Gtk.EventBox):
                 self.update_display()
 
     def handle_motion(self, widget, event):
+        """Move the map due to mouse dragging."""
         self.update_buttons(event=event)
-        self.map_cx -= (event.x - self.motion_prev_x) / 2**(self.map_zoom - 1)
-        self.map_cy -= (event.y - self.motion_prev_y) / 2**(self.map_zoom - 1)
+        self.map_cx -= (event.x - self.motion_prev_x) / 2 ** (self.map_zoom - 1)
+        self.map_cy -= (event.y - self.motion_prev_y) / 2 ** (self.map_zoom - 1)
         self.request_full_update()
         self.motion_prev_x = event.x
         self.motion_prev_y = event.y
 
     def handle_scroll(self, widget, event):
+        """Zoom in or out due to mouse scrolling."""
         if event.direction == Gdk.ScrollDirection.UP:
             if self.map_zoom < 20:
                 self.map_zoom += 1
@@ -479,24 +584,32 @@ class MapWidget (Gtk.EventBox):
         self.request_full_update()
 
     def request_full_update(self):
+        """Fully redraw the map and overlays in 100 ms."""
         if not self.going_to_update:
             self.going_to_update = True
             self.update_display()
             GLib.timeout_add(100, self.do_full_update_now)
 
     def do_full_update_now(self, user_data=None):
+        """Fully redraw the map and overlays."""
         self.update_image()
         self.update_display()
         self.queue_draw()
         self.going_to_update = False
         return False
 
+    # Ordinate means x or y on the fully-zoomed-out map.
+    # Virtual means on the virtual canvas.
+    # Resized means on the actual (pre-crop square) canvas.
+    # Cropped means on the actual widget.
     def ordinate_to_virtual(self, x, cx):
-        return ((x - cx) * 2**(self.map_zoom - 1)) + VIRTUAL_MAP_CANVAS_SIZE / 2
+        return ((x - cx) * 2 ** (self.map_zoom - 1)) + VIRTUAL_MAP_CANVAS_SIZE / 2
 
     def latlon_to_virtual_xy(self, lat, lon):
-        return (self.ordinate_to_virtual(longitude_to_x(lon), self.map_cx),
-                self.ordinate_to_virtual(latitude_to_y(lat), self.map_cy))
+        return (
+            self.ordinate_to_virtual(longitude_to_x(lon), self.map_cx),
+            self.ordinate_to_virtual(latitude_to_y(lat), self.map_cy),
+        )
 
     def latlon_to_resized_xy(self, lat, lon, size):
         x, y = self.latlon_to_virtual_xy(lat, lon)
@@ -505,11 +618,13 @@ class MapWidget (Gtk.EventBox):
         return x, y
 
     def virtual_to_ordinate(self, vx, cx):
-        return ((vx - VIRTUAL_MAP_CANVAS_SIZE / 2) / 2**(self.map_zoom - 1)) + cx
+        return ((vx - VIRTUAL_MAP_CANVAS_SIZE / 2) / 2 ** (self.map_zoom - 1)) + cx
 
     def virtual_xy_to_latlon(self, x, y):
-        return (y_to_latitude(self.virtual_to_ordinate(y, self.map_cy)),
-                x_to_longitude(self.virtual_to_ordinate(x, self.map_cx)))
+        return (
+            y_to_latitude(self.virtual_to_ordinate(y, self.map_cy)),
+            x_to_longitude(self.virtual_to_ordinate(x, self.map_cx)),
+        )
 
     def resized_xy_to_latlon(self, x, y, size):
         x *= VIRTUAL_MAP_CANVAS_SIZE / size[0]
@@ -519,21 +634,24 @@ class MapWidget (Gtk.EventBox):
     def cropped_xy_to_latlon(self, x, y):
         x += self.crop_rect[0]
         y += self.crop_rect[1]
-        size = max(self.crop_rect[2] - self.crop_rect[0],
-                self.crop_rect[3] - self.crop_rect[1])
+        size = max(
+            self.crop_rect[2] - self.crop_rect[0], self.crop_rect[3] - self.crop_rect[1]
+        )
         return self.resized_xy_to_latlon(x, y, (size,) * 2)
 
     def update_trace(self, ns, lat, lon):
+        """Record a new trace point if the robot has moved enough."""
         if ns not in self.traces:
             self.traces[ns] = [(lat, lon)]
         else:
             last_lat, last_lon = self.traces[ns][-1]
-            if (lat - last_lat)**2 + (lon - last_lon)**2 > 4e-9:
+            if (lat - last_lat) ** 2 + (lon - last_lon) ** 2 > 4e-9:
                 self.traces[ns].append((lat, lon))
 
     pointer_polygon = [(0, -10), (8, 10), (0, 5), (-8, 10)]
 
     def draw_on_virtual(self, resized):
+        """Draw the overlay on the resized canvas."""
         status_widgets = self.win.sidebar.status_widgets
         draw = ImageDraw.Draw(resized)
         for ns, widget in status_widgets.iteritems():
@@ -541,20 +659,25 @@ class MapWidget (Gtk.EventBox):
             lon = widget.get_longitude()
             x, y = self.latlon_to_resized_xy(lat, lon, resized.size)
             heading = math.pi * widget.get_heading() / 180
-            color = tuple([int(255 * component) for component
-                in widget.color_button.get_color().to_floats()])
+            color = tuple(
+                [
+                    int(255 * component)
+                    for component in widget.color_button.get_color().to_floats()
+                ]
+            )
 
             self.update_trace(ns, lat, lon)
             for tlat, tlon in self.traces[ns]:
                 tx, ty = self.latlon_to_resized_xy(tlat, tlon, resized.size)
                 draw.ellipse([tx - 2, ty - 2, tx + 2, ty + 2], fill=color + (64,))
-            
+
             prev_wp_polyline = []
             wp_polyline = [(x, y)]
             reached_wp_seq = widget.get_reached_wp_seq()
             for i, waypoint in enumerate(widget.waypoints):
-                wp_latlon = self.latlon_to_resized_xy(waypoint.x_lat,
-                    waypoint.y_long, resized.size)
+                wp_latlon = self.latlon_to_resized_xy(
+                    waypoint.x_lat, waypoint.y_long, resized.size
+                )
                 if i <= reached_wp_seq:
                     prev_wp_polyline.append(wp_latlon)
                 else:
@@ -565,12 +688,13 @@ class MapWidget (Gtk.EventBox):
 
             pointer = transformed_polygon(self.pointer_polygon, heading, (x, y))
             draw.polygon(pointer, fill=color, outline=(255, 255, 255))
-    
-    loading_text = 'Loading'
+
+    loading_text = "Loading"
     loading_font = ImageFont.truetype(UBUNTU_FONT_FILEPATH, 24)
     loading_wh = loading_font.getsize(loading_text)
 
     def update_display(self, widget=None, allocation=None, data=None):
+        """Resize the virtual canvas, draw the overlay, crop, and update the widget."""
         if allocation is None:
             allocation = self.get_allocation()
         win_width, win_height = self.win.get_size()
@@ -590,13 +714,18 @@ class MapWidget (Gtk.EventBox):
             cw, ch = cropped.size
             loading_xy = cw - self.loading_wh[0], ch - self.loading_wh[1]
             draw.rectangle((loading_xy, (cw, ch)), fill=(0, 0, 0))
-            draw.text(loading_xy, self.loading_text, fill=(255, 255, 255),
-                    font=self.loading_font)
+            draw.text(
+                loading_xy,
+                self.loading_text,
+                fill=(255, 255, 255),
+                font=self.loading_font,
+            )
         pixbuf = pil_to_pixbuf(cropped)
         self.image_widget.set_from_pixbuf(pixbuf)
 
     def update_image(self):
-        Z = GOOGLE_NATIVE_MAP_SIZE / (2**(self.map_zoom - 1))
+        """Refetch (usually from cache) and redraw the underlying map."""
+        Z = GOOGLE_NATIVE_MAP_SIZE / (2 ** (self.map_zoom - 1))
         chunk_x = Z * int(self.map_cx / Z) + Z / 2
         chunk_y = Z * int(self.map_cy / Z) + Z / 2
         offset_x = GOOGLE_NATIVE_MAP_SIZE * (1 - ((self.map_cx / Z) % 1))
@@ -610,6 +739,7 @@ class MapWidget (Gtk.EventBox):
                 self.im.paste(fetch_map_chunk(cx, cy, self.map_zoom), (px, py))
 
     def edit_wps_callback(self, widget, ns):
+        """Handle a waypoint editing button state changing."""
         if self.not_top_level_callback:
             return
         self.not_top_level_callback = True
@@ -624,7 +754,8 @@ class MapWidget (Gtk.EventBox):
         self.not_top_level_callback = False
 
 
-class GCSWindow (Gtk.Window):
+class GCSWindow(Gtk.Window):
+
     def __init__(self):
         Gtk.Window.__init__(self)
 
@@ -641,7 +772,7 @@ class GCSWindow (Gtk.Window):
 
 def main():
     # Initialize ROS
-    rospy.init_node('jetyak_multi_gcs', anonymous=True)
+    rospy.init_node("jetyak_multi_gcs", anonymous=True)
     rospy.on_shutdown(Gtk.main_quit)
 
     # Create and show window
@@ -654,14 +785,14 @@ def main():
 
     # Join event threads
     if not rospy.is_shutdown():
-        rospy.signal_shutdown('GTK+ exited main')
+        rospy.signal_shutdown("GTK+ exited main")
         try:
             rospy.spin()
         except rospy.ROSInitException:
             pass
-    sys.stderr.write('Goodbye\n')
+    sys.stderr.write("Goodbye\n")
     raise SystemExit(0)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
