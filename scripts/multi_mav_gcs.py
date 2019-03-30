@@ -39,7 +39,7 @@ requests_cache.install_cache(
 )
 
 
-# This key belongs to afrl.usc@gmail.com
+# This key has been deactivated (since now it's public); replace it with your own
 AFRL_GOOGLE_STATIC_MAPS_KEY = "AIzaSyBeKwLH_2W_dcbLsnM03B8I56GGYYDxyRY"
 # This is the default pixel size for a side of the square fully-zoomed-out world map
 GOOGLE_NATIVE_MAP_SIZE = 512
